@@ -1,0 +1,29 @@
+[project]
+name = "ipython-icat"
+version = "0.0.0"
+description = "IPython extension for display returned objects in the terminal"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "ipython",
+    "matplotlib",
+    "pillow",
+]
+authors = [
+    { name = "Joshua Wilkeson", email = "xeon826@gmail.com" } 
+]
+keywords = ["ipython", "magic", "image", "display", "kitty", "icat"]
+
+[project.urls]
+Homepage = "https://github.com/Kabilan108/ipython-icat"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["icat*"]
+
+# [tool.uv]
+# dev-dependencies = [
+#     "jupyter>=1.1.1",
+# ]
+package = true
+
