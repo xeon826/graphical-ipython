@@ -1,132 +1,103 @@
-# modified from https://github.com/Kabilan108/ipython-icat
-
-from IPython.core.magic_arguments import argument, magic_arguments, parse_argstring
-from IPython.core.magic import Magics, magics_class, line_magic
-from IPython.core.displayhook import DisplayHook
-
-from subprocess import run
-from io import BytesIO
-import sys
-import os
-
-from matplotlib.backend_bases import _Backend, FigureManagerBase
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib import interactive, is_interactive
-from matplotlib._pylab_helpers import Gcf
-import matplotlib
-
+from base64 import b64encode
+from IPython.lib.latextools import latex_to_png
 from PIL import Image
+from io import BytesIO
 
-if hasattr(sys, "ps1") or sys.flags.interactive:
-    interactive(True)
+def write_chunked(cmd, data):
+    """Write chunked data to kitty terminal."""
+    import sys
+    from base64 import b64encode
 
+    data = b64encode(data)
+    while data:
+        chunk, data = data[:4096], data[4096:]
+        m = 1 if data else 0
+        sys.stdout.buffer.write(f"\033_G{cmd},m={m};".encode())
+        sys.stdout.buffer.write(chunk + b"\033\\")
+        sys.stdout.flush()
 
-def _run(*cmd):
-    def f(*args, output=True, **kwargs):
-        if output:
-            kwargs["capture_output"] = True
-            kwargs["text"] = True
-        r = run(cmd + args, **kwargs)
-        if output:
-            return r.stdout.rstrip()
-
-    return f
-
-
-_icat = _run("kitty", "+kitten", "icat", "--align", "left")
-
-
-class FigureManagerICat(FigureManagerBase):
-    def show(self):
-        with BytesIO() as buf:
-            self.canvas.figure.savefig(buf, format="png")
-            _icat(output=False, input=buf.getbuffer())
-
-
-class FigureCanvasICat(FigureCanvasAgg):
-    manager_class = FigureManagerICat
-
-
-@_Backend.export
-class _BackendICatAgg(_Backend):
-    FigureCanvas = FigureCanvasICat
-    FigureManager = FigureManagerICat
-    mainloop = lambda: None
-
-    @classmethod
-    def draw_if_interactive(cls):
-        manager = Gcf.get_active()
-        if is_interactive() and manager.canvas.figure.get_axes():
-            cls.show()
-
-    @classmethod
-    def show(cls, *args, **kwargs):
-        _Backend.show(*args, **kwargs)
-        Gcf.destroy_all()
-
-
-@magics_class
-class ICatMagics(Magics):
-    @line_magic
-    def plt_icat(self, line):
-        matplotlib.use("module://icat")
-        print("loaded icat backend for mpl")
-
-    @magic_arguments()
-    @argument("image", help="PIL Image object or path to image file")
-    @argument("-w", "--width", type=int, help="Width to resize the image")
-    @argument("-h", "--height", type=int, help="Height to resize the image")
-    @line_magic
-    def icat(self, line):
-        args = parse_argstring(self.icat, line)
-        image_arg = args.image.strip()
-
-        # check if the input is a variable in the user's ns
-        user_ns = self.shell.user_ns
-        if image_arg in user_ns and isinstance(user_ns[image_arg], Image.Image):
-            img = user_ns[image_arg]
-        elif os.path.isfile(image_arg):
-            img = Image.open(image_arg)
+def imcat(image_data, metadata):
+    print('asdf')
+    """Display image data using kitty's terminal graphics protocol."""
+    try:
+        # Convert bytes to PIL Image if it's raw image data
+        if isinstance(image_data, bytes):
+            img = Image.open(BytesIO(image_data))
+        elif isinstance(image_data, Image.Image):
+            img = image_data
         else:
-            print(
-                f"Error: '{image_arg}' is neither a valid PIL Image nor a path to an image file."
-            )
-            return
+            img = Image.open(BytesIO(image_data))
+        
+        # Convert to PNG format in memory
+        bio = BytesIO()
+        img.save(bio, format='PNG')
+        
+        # Get the binary data
+        payload = bio.getvalue()
+        
+        # Calculate dimensions
+        width, height = img.size
+        
+        # Construct the command for kitty
+        cmd = {
+            'a': 'T',  # Temporary image
+            'f': 100,  # PNG format
+            's': width,
+            'v': height,
+        }
+        
+        # Convert command dict to string
+        cmd_str = ','.join(f'{k}={v}' for k, v in cmd.items())
+        
+        # Write the image data in chunks
+        write_chunked(cmd_str, payload)
+        
+        # Move cursor to next line
+        print()
+        
+    except Exception as e:
+        print(f"Error displaying image: {str(e)}")
 
-        # resize the image if width or height is specified
-        if args.width or args.height:
-            img.thumbnail((args.width or img.width, args.height or img.height))
+def mathcat(data, meta):
+    """Convert LaTeX to PNG and display it."""
+    png = latex_to_png(f'$${data}$$'.replace('\displaystyle', '').replace('$$$', '$$'))
+    imcat(png, meta)
 
-        # display image
-        with BytesIO() as buf:
-            img.save(buf, format="PNG")
-            _icat(output=False, input=buf.getbuffer())
+def handle_matplotlib(fig, meta):
+    print('matplot lib')
+    """Convert matplotlib figure to image and display it."""
+    bio = BytesIO()
+    fig.canvas.print_figure(bio, format='png', bbox_inches='tight')
+    bio.seek(0)
+    imcat(bio.getvalue(), meta)
 
-class CustomDisplayHook(DisplayHook):
-    def __init__(self, shell):
-        self.shell = shell
-
-    def __call__(self, result=None):
-        if result is None:
-            return
-        # Custom logic to handle result display
-        print("Custom display:", repr(result))
-
-def icat(img: Image.Image, width: int = None, height: int = None):
-    img_ = img.copy()
-    with BytesIO() as buf:
-        if width or height:
-            img_.thumbnail((width or img.width, height or img.height))
-        img_.save(buf, format="PNG")
-        _icat(output=False, input=buf.getbuffer())
-
+def register_mimerenderer(ipython, mime, handler):
+    """Register a handler for a specific MIME type in IPython."""
+    # Ensure the MIME type is in active types
+    if mime not in ipython.display_formatter.active_types:
+        ipython.display_formatter.active_types.append(mime)
+    
+    # Enable the formatter for this MIME type
+    ipython.display_formatter.formatters[mime].enabled = True
+    
+    # Register the handler
+    ipython.mime_renderers[mime] = handler
 
 def load_ipython_extension(ipython):
+    """Load the extension and register all supported MIME type handlers."""
+    # Register handlers for different image types
+    register_mimerenderer(ipython, 'image/png', imcat)
+    register_mimerenderer(ipython, 'image/jpeg', imcat)
+    register_mimerenderer(ipython, 'text/latex', mathcat)
+    # register_mimerenderer(ipython, 'application/vnd.matplotlib.figure', handle_matplotlib)
 
-    hook = CustomDisplayHook(shell=ipython)
-
-    # Obtain the current config and set the display hook class programmatically
-    ipython.config.InteractiveShell.displayhook_class = hook
-    # Initialize with the shell
-    ipython.displayhook = CustomDisplayHook(shell=ipython)
-    ipython.register_magics(ICatMagics)
+    
+    # Also handle PIL Image objects directly
+    def _repr_png_(self):
+        bio = BytesIO()
+        self.save(bio, format='PNG')
+        return bio.getvalue()
+    
+    # Add PNG representation method to PIL Image if not already present
+    if not hasattr(Image.Image, '_repr_png_'):
+        Image.Image._repr_png_ = _repr_png_
